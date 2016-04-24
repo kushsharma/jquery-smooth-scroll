@@ -1,46 +1,63 @@
 /*global module:false*/
 
 module.exports = function(grunt) {
+  var pkg = grunt.file.readJSON('package.json');
+  var marked = require('marked');
+  var hl = require('node-syntaxhighlighter');
 
-  // Path to private settings (used here for user/pwd to rsync to remote site)
+  marked.setOptions({
+    highlight: function(code, lang) {
+      lang = lang || 'javascript';
+      lang = hl.getLanguage(lang);
 
-
-  // Because I'm lazy
-  var _ = grunt.util._;
+      return hl.highlight(code, lang);
+    },
+    gfm: true
+  });
 
   // Project configuration.
   grunt.initConfig({
-    component: './component.json',
-    pkg: grunt.file.readJSON('smooth-scroll.jquery.json'),
+    pluginName: 'smooth-scroll',
+    pkg: pkg,
     meta: {
       banner: '/*!<%= "\\n" %>' +
-          ' * <%= pkg.title || pkg.name %> - v<%= pkg.version %> - ' +
+          ' * <%= pkg.title %> - v<%= pkg.version %> - ' +
           '<%= grunt.template.today("yyyy-mm-dd")  + "\\n" %>' +
           '<%= pkg.homepage ? " * " + pkg.homepage + "\\n" : "" %>' +
           ' * Copyright (c) <%= grunt.template.today("yyyy") %> <%= pkg.author.name %>' +
           '<%= "\\n" %>' +
-          ' * Licensed <%= _.pluck(pkg.licenses, "type").join(", ") %>' +
-          ' (<%= _.pluck(pkg.licenses, "url").join(", ") %>)' +
+          ' * Licensed <%= pkg.license %>' +
           '<%= "\\n" %>' + ' */' +
           '<%= "\\n\\n" %>'
     },
-		concat: {
+    concat: {
       all: {
-        src: ['src/jquery.<%= pkg.name %>.js'],
-        dest: 'jquery.<%= pkg.name %>.js'
+        src: ['src/jquery.<%= pluginName %>.js'],
+        dest: 'jquery.<%= pluginName %>.js'
       },
       options: {
         stripBanners: true,
-        banner: '<%= meta.banner %>'
+        banner: '<%= meta.banner %>',
+        process: function(src) {
+          var umdHead = grunt.file.read('lib/tmpl/umdhead.tpl');
+          var umdFoot = grunt.file.read('lib/tmpl/umdfoot.tpl');
+
+          src = src
+          .replace('(function($) {', umdHead)
+          .replace('})(jQuery);', umdFoot);
+
+          return src;
+        }
       }
     },
     uglify: {
       all: {
         files: {
-          'jquery.<%= pkg.name %>.min.js': ['<%= concat.all.dest %>']
+          'jquery.<%= pluginName %>.min.js': ['<%= concat.all.dest %>']
         },
         options: {
-          preserveComments: 'some'
+          banner: '<%= meta.banner %>',
+          // preserveComments: /\/\*[\s\S]*/
         }
       }
     },
@@ -48,26 +65,21 @@ module.exports = function(grunt) {
       scripts: {
         files: '<%= jshint.all %>',
         tasks: ['jshint:all']
+      },
+      docs: {
+        files: ['readme.md', 'lib/tmpl/**/*.html'],
+        tasks: ['docs']
       }
-    },
-    shell: {
-      rsync: {
-        // command is set by setshell:rsync.
-        stdout: true
-      }
-    },
-    setshell: {
-      rsync: {
-        file: 'gitignore/settings.json',
-        cmdAppend: '<%= pkg.name %>/'
-      }
+
     },
     jshint: {
       all: ['Gruntfile.js', 'src/**/*.js'],
       options: {
         curly: true,
-        // eqeqeq: true,
-        // immed: true,
+        devel: true,
+        eqeqeq: true,
+        unused: true,
+        immed: true,
         latedef: true,
         newcap: true,
         noarg: true,
@@ -77,95 +89,80 @@ module.exports = function(grunt) {
         eqnull: true,
         browser: true,
         globals: {
-          jQuery: true
+          jQuery: true,
+          require: false
         }
       }
     },
+    jscs: {
+      src: 'src/**/*.js',
+      options: {
+        config: '.jscsrc',
+        fix: true,
+        verbose: true
+      }
+    },
     version: {
-      patch: {
+      src: {
+        src: ['src/jquery.<%= pluginName %>.js']
+      },
+      banners: {
+        pkg: pkg,
         src: [
-          '<%= pkg.name %>.jquery.json',
-          'package.json',
-          'src/jquery.<%= pkg.name %>.js',
-          'jquery.<%= pkg.name %>.js'
+          'jquery.<%= pluginName %>.js',
+          'jquery.<%= pluginName %>.min.js'
         ],
         options: {
-          release: 'patch'
+          prefix: '- v'
         }
       },
-      same: {
-        src: ['package.json', 'src/jquery.<%= pkg.name %>.js', 'jquery.<%= pkg.name %>.js']
+      package: {
+        src: ['package.json']
       },
-      bannerPatch: {
-        src: ['jquery.<%= pkg.name %>.js'],
-        options: {
-          prefix: '- v',
-          release: 'patch'
-        }
+    }
+  });
+
+  grunt.registerTask('docs', 'Convert readme.md to html and concat with header and footer for index.html', function() {
+    var readme = grunt.file.read('readme.md');
+    var head = grunt.template.process(grunt.file.read('lib/tmpl/header.tpl'));
+    var foot = grunt.file.read('lib/tmpl/footer.tpl');
+    var doc = marked(readme);
+
+    grunt.file.write('index.html', head + doc + foot);
+  });
+
+  grunt.registerTask('updateBower', 'Update bower.json to match package.json', function() {
+    var pkg = require('./package.json');
+    var props = ['name', 'main', 'homepage', 'repository', 'dependencies', 'keywords', 'license'];
+    var json = {
+      description: 'Easy implementation of smooth scrolling for same-page links'
+    };
+
+    props.forEach(function(item) {
+      if (pkg[item]) {
+        json[item] = pkg[item];
       }
-    }
-  });
-
-  grunt.registerMultiTask( 'setshell', 'Set grunt shell commands', function() {
-    var settings, cmd,
-        tgt = this.target,
-        cmdLabel = 'shell.' + tgt + '.command',
-        file = this.data.file,
-        append = this.data.cmdAppend || '';
-
-    if ( !grunt.file.exists(file) ) {
-      grunt.warn('File does not exist: ' + file);
-    }
-
-    settings = grunt.file.readJSON(file);
-    if (!settings[tgt]) {
-      grunt.warn('No ' + tgt + ' property found in ' + file);
-    }
-
-    cmd = settings[tgt] + append;
-    grunt.config(cmdLabel, cmd);
-    grunt.log.writeln( ('Setting ' + cmdLabel + ' to:').cyan );
-
-    grunt.log.writeln(cmd);
-
-  });
-
-  grunt.registerTask( 'deploy', ['setshell:rsync', 'shell:rsync']);
-
-  grunt.registerTask( 'component', 'Update component.json', function() {
-    var comp = grunt.config('component'),
-        pkgName = grunt.config('pkg').name,
-        pkg = grunt.file.readJSON(pkgName + '.jquery.json'),
-        json = {};
-
-
-
-    ['name', 'version', 'dependencies'].forEach(function(el) {
-      json[el] = pkg[el];
     });
 
-    _.extend(json, {
-      main: grunt.config('concat.all.dest'),
-      ignore: [
-        'demo/',
-        'lib/',
-        'src/',
-        '*.json'
-      ]
-    });
-    json.name = 'jquery.' + json.name;
+    json.authors = [pkg.author];
+    json.moduleType = ['amd', 'node'];
+    json.ignore = ['demo/', 'lib/', 'src/', 'test/', '**/.*', 'Gruntfile.js', 'package.json'];
 
-    grunt.file.write( comp, JSON.stringify(json, null, 2) );
-    grunt.log.writeln( "File '" + comp + "' updated." );
+    grunt.file.write('bower.json', JSON.stringify(json, null, 2));
   });
 
-  grunt.registerTask('build', ['jshint', 'concat', 'version:same', 'component', 'uglify']);
-  grunt.registerTask('patch', ['jshint', 'concat', 'version:bannerPatch', 'version:patch', 'component', 'uglify']);
+  grunt.registerTask('lint', ['jshint', 'jscs']);
+  grunt.registerTask('build', ['lint', 'concat', 'version', 'uglify', 'docs']);
   grunt.registerTask('default', ['build']);
 
+  ['patch', 'minor', 'major'].forEach(function(release) {
+    grunt.registerTask(release, ['lint', 'version:src:' + release, 'concat', 'uglify', 'version:banners:' + release, 'version:package:' + release]);
+  });
+
+  grunt.loadNpmTasks('grunt-jscs');
   grunt.loadNpmTasks('grunt-contrib-jshint');
   grunt.loadNpmTasks('grunt-contrib-uglify');
   grunt.loadNpmTasks('grunt-contrib-concat');
+  grunt.loadNpmTasks('grunt-contrib-watch');
   grunt.loadNpmTasks('grunt-version');
-  grunt.loadNpmTasks('grunt-shell');
 };
